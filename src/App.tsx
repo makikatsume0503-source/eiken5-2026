@@ -32,6 +32,7 @@ interface Stats {
   // hasPerfected: boolean; 
   activityLog: Record<string, DailyStats>;
   reviewList: string[];
+  weakTags: Record<string, number>; // tag -> incorrect count
 }
 
 export default function App() {
@@ -57,7 +58,8 @@ export default function App() {
         totalAnswered: 0,
         totalCorrect: 0,
         activityLog: {},
-        reviewList: []
+        reviewList: [],
+        weakTags: {}
       };
     }
     const parsed = JSON.parse(saved);
@@ -72,7 +74,7 @@ export default function App() {
         }
       });
     }
-    return { ...parsed, activityLog: migratedLog };
+    return { ...parsed, activityLog: migratedLog, weakTags: parsed.weakTags || {} };
   });
 
   useEffect(() => {
@@ -106,6 +108,14 @@ export default function App() {
       if (stats.reviewList.length === 0) return;
       const flatData = Object.values(allQuizData).flat();
       shuffled = shuffle(stats.reviewList.map(id => flatData.find(q => q.id === id)).filter((q): q is Question => !!q));
+
+      // スマート復習: 苦手なタグを含む問題を優先
+      shuffled.sort((a, b) => {
+        const aWeak = a.tags?.reduce((sum, tag) => sum + (stats.weakTags[tag] || 0), 0) || 0;
+        const bWeak = b.tags?.reduce((sum, tag) => sum + (stats.weakTags[tag] || 0), 0) || 0;
+        return bWeak - aWeak; // 苦手スコアが高い順
+      });
+
       // Fallback if reviewList has IDs not in data?
       if (shuffled.length === 0) return;
     } else {
@@ -154,6 +164,14 @@ export default function App() {
         ? [...currentDaily.categories, category]
         : currentDaily.categories;
 
+      // Update weakTags
+      const currentWeakTags = { ...prev.weakTags };
+      if (!correct && currentQ.tags) {
+        currentQ.tags.forEach(tag => {
+          currentWeakTags[tag] = (currentWeakTags[tag] || 0) + 1;
+        });
+      }
+
       return {
         ...prev,
         totalAnswered: prev.totalAnswered + 1,
@@ -168,7 +186,8 @@ export default function App() {
         },
         reviewList: correct
           ? (category === 'review' ? prev.reviewList.filter(id => id !== currentQ.id) : prev.reviewList)
-          : (!prev.reviewList.includes(currentQ.id) ? [...prev.reviewList, currentQ.id] : prev.reviewList)
+          : (!prev.reviewList.includes(currentQ.id) ? [...prev.reviewList, currentQ.id] : prev.reviewList),
+        weakTags: currentWeakTags
       };
     });
 
@@ -197,6 +216,42 @@ export default function App() {
 
   const currentQ = currentQuestions[currentIndex];
 
+  // スマートアドバイス生成
+  const getSmartAdvice = () => {
+    const weakTags = stats.weakTags;
+    // エラーチェック: weakTagsがない場合はデフォルトメッセージ
+    if (!weakTags) return "きょうも 3つのスタンプ あつめよう！";
+
+    const entries = Object.entries(weakTags);
+    if (entries.length === 0) return "きょうも 3つのスタンプ あつめよう！";
+
+    // 一番間違えているタグを探す
+    const sorted = entries.sort((a, b) => b[1] - a[1]);
+    const [worstTag, count] = sorted[0];
+
+    if (count < 3) return "きょうも 3つのスタンプ あつめよう！";
+
+    // タグごとのメッセージ (ポジティブに！)
+    const messages: Record<string, string> = {
+      'animal': 'どうぶつ博士(はかせ) に なろう！',
+      'food': 'たべものマスター をめざそう！',
+      'number': 'すうじ に チャレンジ！',
+      'color': 'いろ を 英語(えいご)で いえるかな？',
+      'school': 'がっこうの タンゴを おぼえよう！',
+      'grammar': 'ぶんぽう が わかると かっこいい！',
+      'be-verb': 'beどうし を マスターしよう！',
+      'can-verb': '「できる(can)」を つかってみよう！',
+      'who': '「だれ(Who)」か わかるかな？',
+      'where': '「どこ(Where)」か きいてみよう！',
+      'when': '「いつ(When)」か わかるかな？',
+      'what': '「なに(What)」か こたえられる？',
+      'greeting': 'げんきに あいさつ してみよう！',
+      'reorder': 'ならべかえ を とくい にしよう！',
+    };
+
+    return messages[worstTag] || `「${worstTag}」に チャレンジ！`;
+  };
+
   return (
     <div className="min-h-screen bg-[#FFF5F8] font-sans text-gray-800 p-4 flex flex-col items-center select-none overflow-x-hidden">
 
@@ -221,7 +276,7 @@ export default function App() {
         {mode === 'menu' && (
           <div className="p-7 overflow-y-auto w-full">
             <div className="flex justify-between items-start mb-2">
-              <RabbitMascot mood="normal" message="きょうも 3つのスタンプ あつめよう！" />
+              <RabbitMascot mood="normal" message={getSmartAdvice()} />
               <button onClick={() => setMode('calendar')} className="bg-pink-50 text-pink-500 p-4 rounded-[25px] border-2 border-pink-100 flex flex-col items-center active:scale-95 shadow-sm transition-all">
                 <CalendarIcon size={28} />
                 <span className="text-[10px] font-black mt-1">きろく</span>
@@ -234,7 +289,7 @@ export default function App() {
               <MenuBtn title="スペル" sub="Spelling" icon={<Keyboard />} color="bg-orange-400" onClick={() => startQuiz('spelling')} />
               <MenuBtn title="あいさつ" sub="Dialogue" icon={<Smile />} color="bg-green-400" onClick={() => startQuiz('dialogue')} />
               <MenuBtn title="ぎもんし" sub="Questions" icon={<HelpCircle />} color="bg-blue-400" onClick={() => startQuiz('questions')} />
-              <MenuBtn title="どうさ" sub="Grammar" icon={<Zap />} color="bg-purple-400" onClick={() => startQuiz('action')} />
+              <MenuBtn title="ぶんぽう" sub="Grammar" icon={<Zap />} color="bg-purple-400" onClick={() => startQuiz('grammar')} />
               <div className="col-span-2 mt-2">
                 <MenuBtn
                   title="にがてを こくふくする" sub="Review" icon={<History />} color="bg-red-400"
